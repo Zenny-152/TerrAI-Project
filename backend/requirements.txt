@@ -1,0 +1,9 @@
+Flask==2.3.2
+Flask-SQLAlchemy==3.0.3
+geoalchemy2==0.11.3
+psycopg2-binary==2.9.7
+python-dotenv==1.0.0
+gunicorn==20.1.0
+Shapely==2.0.1
+Geopandas==0.13.2
+pyproj==3.6.0
