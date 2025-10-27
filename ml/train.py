@@ -7,11 +7,12 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as T
 from torchvision import datasets, models
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.utils.class_weight import compute_class_weight
 from tqdm import tqdm
 from utils import CLASS_NAMES
+from losses import FocalLoss
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -20,14 +21,26 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def mixup_data(x, y, alpha=0.4):
+    if alpha <= 0:
+        return x, y, None, None, 1.0
+    lam = np.random.beta(alpha, alpha)
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
 def get_transforms(img_size=224):
     transform_train = T.Compose([
-        T.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
+        T.RandomResizedCrop(img_size, scale=(0.6, 1.0)),
         T.RandomHorizontalFlip(),
-        T.RandomRotation(15),
-        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
+        T.RandomRotation(20),
+        T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.02),
         T.ToTensor(),
         T.Normalize([0.485,0.456,0.406], [0.229,0.224,0.225]),
+        T.RandomGrayscale(p=0.1),
+        T.RandomErasing(p=0.2, scale=(0.02,0.15)),
     ])
     transform_val = T.Compose([
         T.Resize(int(img_size*1.14)),
@@ -39,20 +52,20 @@ def get_transforms(img_size=224):
 
 def build_model(num_classes, pretrained=True, base='resnet18'):
     if base == 'resnet18':
-        # torchvision >= 0.13 may use weights=... instead of pretrained bool
         try:
             model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if pretrained else None)
         except Exception:
+            # fallback for older torchvision
             model = models.resnet18(pretrained=pretrained)
         num_f = model.fc.in_features
         model.fc = nn.Linear(num_f, num_classes)
         return model
-    # add other backbones if desired
     raise NotImplementedError
 
 def main(args):
     set_seed(args.seed)
-    device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith('cuda') else 'cpu')
+    # device selection: respect requested device but fallback to cpu if not available
+    device = torch.device(args.device if args.device.startswith('cuda') and torch.cuda.is_available() else 'cpu')
     print("Using device:", device)
 
     transform_train, transform_val = get_transforms(args.img_size)
@@ -60,17 +73,21 @@ def main(args):
     val_ds   = datasets.ImageFolder(os.path.join(args.data, "val"), transform_val)
 
     print("ImageFolder class_to_idx:", train_ds.class_to_idx)
-    # verify order corresponds to CLASS_NAMES or adapt accordingly
+    # Ensure classes order matches CLASS_NAMES (you already checked)
 
-    # compute class weights to mitigate imbalance
+    # compute class weights (aligned to class indices 0..C-1)
+    num_classes = len(CLASS_NAMES)
     targets = [y for _, y in train_ds.samples]
-    class_weights = compute_class_weight('balanced', classes=np.unique(targets), y=targets)
-    class_weights = torch.tensor(class_weights, dtype=torch.float)
+    classes = np.arange(num_classes)
+    class_weights_np = compute_class_weight('balanced', classes=classes, y=np.array(targets))
+    class_weights = torch.tensor(class_weights_np, dtype=torch.float)
+    sample_weights = [class_weights_np[y] for _, y in train_ds.samples]
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
-    model = build_model(num_classes=len(CLASS_NAMES), pretrained=not args.no_pretrained)
+    model = build_model(num_classes=num_classes, pretrained=not args.no_pretrained)
     # freeze backbone if requested
     if args.freeze_backbone:
         for name, p in model.named_parameters():
@@ -79,7 +96,7 @@ def main(args):
 
     model = model.to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    criterion = FocalLoss(gamma=2.0, alpha=class_weights_np if class_weights is not None else None)
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
@@ -129,8 +146,8 @@ def main(args):
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
         val_acc = correct / total if total > 0 else 0.0
-        avg_train_loss = running_loss / len(train_loader) if len(train_loader)>0 else 0.0
-        avg_val_loss = val_loss / len(val_loader) if len(val_loader)>0 else 0.0
+        avg_train_loss = running_loss / len(train_loader) if len(train_loader) > 0 else 0.0
+        avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
         print(f"[Epoch {epoch+1}] train_loss={avg_train_loss:.4f} val_loss={avg_val_loss:.4f} val_acc={val_acc:.4f}")
 
         scheduler.step(avg_val_loss)
@@ -151,7 +168,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--save-dir", type=str, default="ml/models")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu (use 'cuda' to request GPU)")
     parser.add_argument("--img-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
