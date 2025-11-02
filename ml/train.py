@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.utils.class_weight import compute_class_weight
 from tqdm import tqdm
-from utils import CLASS_NAMES
-from losses import FocalLoss
+from .utils import CLASS_NAMES
+from .losses import FocalLoss
 
 def set_seed(seed=42):
     random.seed(seed)

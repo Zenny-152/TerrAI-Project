@@ -1,17 +1,20 @@
 from typing import List
 
-CLASS_NAMES = ["01_low", "02_medium", "03_high", "04_extreme"]
+CLASS_NAMES = ["01_low", "02_medium", "03_high"]
 
-# mapeamento human-friendly (opcional)
+# mapeamento human-friendly
 CLASS_DISPLAY_NAMES = {
     "01_low": "low",
     "02_medium": "medium",
     "03_high": "high",
-    "04_extreme": "extreme"
 }
 
 # centers used to convert class probs into a representative percentage
-CLASS_CENTERS = [15.0, 45.5, 75.5, 95.0]
+CLASS_CENTERS = {
+    "01_low": 15.0,     # centro de 0-30
+    "02_medium": 48.0,  # centro de 31-65 (aprox 48)
+    "03_high": 85.0     # centro de 66-100
+}
 
 def probs_to_percentage(probs: List[float]) -> float:
     """
@@ -31,9 +34,8 @@ def percentage_to_bucket(percent: float) -> str:
     """
     Converte a porcentagem para rótulo textual conforme suas faixas:
       0..30    -> low
-      31..60   -> medium
-      61..90   -> high
-      >90     -> extreme
+      31..65   -> medium
+      66..100   -> high
     """
     try:
         percent = float(percent)
@@ -41,10 +43,8 @@ def percentage_to_bucket(percent: float) -> str:
         return "unknown"
     if percent <= 30:
         return "low"
-    if percent <= 60:
+    if percent <= 65:
         return "medium"
-    if percent <= 90:
-        return "high"
     return "extreme"
 
 def class_index_to_name(idx: int) -> str:
