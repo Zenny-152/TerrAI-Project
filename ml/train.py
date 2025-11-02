@@ -1,6 +1,7 @@
 import os
 import argparse
 import random
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,6 +23,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 def mixup_data(x, y, alpha=0.4):
+    # Return mixed inputs, pairs of targets, and lambda
     if alpha <= 0:
         return x, y, None, None, 1.0
     lam = np.random.beta(alpha, alpha)
@@ -31,12 +33,66 @@ def mixup_data(x, y, alpha=0.4):
     y_a, y_b = y, y[index]
     return mixed_x, y_a, y_b, lam
 
+def rand_bbox(size, lam):
+    # size: (B, C, H, W)
+    B, C, H, W = size
+    cut_rat = math.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
+
+def cutmix_data(x, y, alpha=1.0):
+    """
+    Apply CutMix on a batch.
+    Returns mixed_x, y_a, y_b, lam
+    """
+    if alpha <= 0:
+        return x, y, None, None, 1.0
+    lam = np.random.beta(alpha, alpha)
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(x.device)
+
+    bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+    # make a copy to avoid in-place if needed
+    x_cutmix = x.clone()
+    # replace patch
+    x_cutmix[:, :, bby1:bby2, bbx1:bbx2] = x[index, :, bby1:bby2, bbx1:bbx2]
+    # recompute lambda as area ratio
+    area = (bbx2 - bbx1) * (bby2 - bby1)
+    lam = 1.0 - area / (x.size(2) * x.size(3))
+    y_a, y_b = y, y[index]
+    return x_cutmix, y_a, y_b, lam
+
+def cutout_batch(x, size=50):
+    """
+    Apply Cutout to each image in the batch.
+    size: side length of square to zero (in pixels)
+    """
+    B, C, H, W = x.size()
+    for i in range(B):
+        top = np.random.randint(0, max(1, H - size + 1))
+        left = np.random.randint(0, max(1, W - size + 1))
+        bottom = min(H, top + size)
+        right = min(W, left + size)
+        x[i, :, top:bottom, left:right] = 0.0
+    return x
+
 def get_transforms(img_size=224):
     transform_train = T.Compose([
-        T.RandomResizedCrop(img_size, scale=(0.6, 1.0)),
+        T.RandomResizedCrop(img_size, scale=(0.7, 1.0)),
         T.RandomHorizontalFlip(),
-        T.RandomRotation(20),
-        T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.02),
+        T.RandomRotation(15),
+        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
         T.ToTensor(),
         T.Normalize([0.485,0.456,0.406], [0.229,0.224,0.225]),
         T.RandomGrayscale(p=0.1),
@@ -115,18 +171,31 @@ def main(args):
             imgs = imgs.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
-            if scaler:
-                with autocast():
-                    out = model(imgs)
-                    loss = criterion(out, labels)
+
+            if args.cutmix:
+                mixed_imgs, y_a, y_b, lam = cutmix_data(imgs, labels, alpha=args.cutmix_alpha)
+                out = model(mixed_imgs)
+                loss = lam * criterion(out, y_a.to(device)) + (1-lam) * criterion(out, y_b.to(device))
+            elif args.mixup:
+                mixed_imgs, y_a, y_b, lam = mixup_data(imgs, labels, alpha=args.mixup_alpha)
+                y_a = y_a.to(device)
+                y_b = y_b.to(device)
+                out = model(mixed_imgs)
+                # mix-up loss (works with FocalLoss which expects indices)
+                loss = lam * criterion(out, y_a) + (1.0 - lam) * criterion(out, y_b)
+            else:
+                out = model(imgs)
+                loss = criterion(out, labels)
+
+            # mixed precision if requested
+            if scaler is not None:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                out = model(imgs)
-                loss = criterion(out, labels)
                 loss.backward()
                 optimizer.step()
+
             running_loss += loss.item()
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
@@ -175,5 +244,11 @@ if __name__ == "__main__":
     parser.add_argument("--freeze-backbone", action='store_true')
     parser.add_argument("--no-pretrained", action='store_true')
     parser.add_argument("--amp", action='store_true', help="use mixed precision")
+    parser.add_argument("--mixup", action="store_true", help="use MixUp augmentation")
+    parser.add_argument("--mixup-alpha", type=float, default=0.4, help="MixUp alpha (beta distribution)")
+    parser.add_argument("--cutmix", action="store_true")
+    parser.add_argument("--cutmix-alpha", type=float, default=1.0)
+    parser.add_argument("--cutout", action="store_true")
+    parser.add_argument("--cutout-size", type=int, default=64)
     args = parser.parse_args()
     main(args)
