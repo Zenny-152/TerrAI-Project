@@ -1,10 +1,3 @@
-"""
-eval.py
-
-Avalia o modelo treinado sobre a pasta ml/data/test (ImageFolder).
-Gera relatório de classificação e matriz de confusão (opcional: salva figura %).
-"""
-
 import os
 import argparse
 import torch
