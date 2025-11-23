@@ -1,15 +1,16 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, render_template_string, url_for
 from werkzeug.utils import secure_filename
-from shapely.geometry import shape, MultiPolygon
+from shapely.geometry import shape, MultiPolygon, mapping
 import os
 from datetime import datetime
 from PIL import Image
 import exifread
+from geoalchemy2.shape import from_shape
 
 from .. import database as db
 from ..models import SlideEvent, ImageUpload, Prediction
 from ..utils.geo import buffer_in_meters
-from geoalchemy2.shape import from_shape
+from ml import predict as ml_predict
 
 
 bp = Blueprint('ingest', __name__)
@@ -136,7 +137,7 @@ def _sanitize_exif_tags(tags, max_len=2000):
 
     return out if out else None
 
-@bp.route('/image', methods=['POST'])
+@bp.route('/upload', methods=['POST'])
 def ingest_image():
     """
     Recebe multipart/form-data:
@@ -212,44 +213,106 @@ def ingest_image():
             meta_info={'uploaded_at': datetime.utcnow().isoformat()}
         )
         db.session.add(img_rec)
-        db.session.flush()  # obtém img_rec.id antes do commit
+        db.session.commit()   # commit here para garantir img_rec.id mesmo se ML falhar
 
-        pred_id = None
-        pred_geojson = None
-        # create prediction polygon buffer only if coords exist
+        # --- monta buffer (shapely) se lat/lon existir ---
+        poly = None
+        geom_wkb = None
+        buffer_geojson = None
         if lat is not None and lon is not None:
-            poly = buffer_in_meters(lat, lon, radius_m=50)  # default 50m buffer
-            geom_wkb = from_shape(poly, srid=4326)
-            pred = Prediction(
-                geom=geom_wkb,
-                prob=0.0,
-                model_version='v0-stub',
-                metadata={'method': 'buffer', 'radius_m': 50, 'image_id': img_rec.id}
-            )
-            db.session.add(pred)
-            db.session.commit()
-            pred_id = pred.id
-            pred_geojson = poly.__geo_interface__
-        else:
-            db.session.commit()
+            try:
+                poly = buffer_in_meters(lat, lon, radius_m=50)  # seu helper já existente
+                geom_wkb = from_shape(poly, srid=4326)          # pronto para gravar em coluna geom
+                buffer_geojson = mapping(poly)                  # geojson fallback
+            except Exception as e:
+                current_app.logger.debug(f"failed to build buffer polygon: {e}")
+                poly = None
+                geom_wkb = None
+                buffer_geojson = None
 
-        # return useful info including image_id
+        # --- chamada ao ML (tenta, mas não falha o upload caso der erro) ---
+        ml_result = None
+        try:
+            with open(save_path, 'rb') as fh:
+                image_bytes = fh.read()
+            ml_result = ml_predict.predict_from_bytes(image_bytes)
+            # esperado: dict com keys: class_index, class_name, prob, probs, percentage, severity_label, model_version
+        except Exception as e:
+            current_app.logger.exception("ML prediction failed")
+            ml_result = None
+
+        # verifica se a tabela Prediction tem coluna 'geom'
+        pred_cols = [c.name for c in Prediction.__table__.columns]
+        has_geom_col = 'geom' in pred_cols
+
+        # monta meta_info base
+        meta = {
+            "method": "ml-resnet" if ml_result else ("buffer" if poly else "manual"),
+            "image_id": img_rec.id,
+            "uploaded_at": datetime.utcnow().isoformat()
+        }
+
+        if ml_result:
+            meta.update({
+                "probs": ml_result.get("probs"),
+                "pred_class": ml_result.get("class_name"),
+                "percentage": ml_result.get("percentage"),
+                "severity_label": ml_result.get("severity_label"),
+            })
+
+        # se houver buffer e não houver coluna geom, grava geojson no meta_info
+        if buffer_geojson and not has_geom_col:
+            meta["buffer_geojson"] = buffer_geojson
+
+        # monta kwargs para Prediction (inclui geom apenas se coluna existir)
+        pred_kwargs = {
+            "prob": float(ml_result.get("prob")) if ml_result and ml_result.get("prob") is not None else (0.0 if poly else None),
+            "model_version": ml_result.get("model_version") if ml_result else None,
+            "meta_info": meta,
+            "created_at": datetime.utcnow()
+        }
+        if has_geom_col and geom_wkb is not None:
+            pred_kwargs["geom"] = geom_wkb
+
+        # cria Prediction e salva
+        pred = Prediction(**pred_kwargs)
+        db.session.add(pred)
+
+        # opcional: atualiza campos do ImageUpload com model info (para consulta rápida)
+        if ml_result:
+            img_rec.model_prob = float(ml_result.get("prob")) if ml_result.get("prob") is not None else img_rec.model_prob
+            img_rec.model_version = ml_result.get("model_version") or img_rec.model_version
+            # atualiza meta_info do image com ml summary
+            mm = img_rec.meta_info or {}
+            mm.update({
+                "ml_pred": {
+                    "pred_class": ml_result.get("class_name"),
+                    "prob": ml_result.get("prob"),
+                    "percentage": ml_result.get("percentage"),
+                    "severity_label": ml_result.get("severity_label"),
+                    "model_version": ml_result.get("model_version")
+                }
+            })
+            img_rec.meta_info = mm
+
+        db.session.commit()
+
         response = {
             "image_id": img_rec.id,
             "filename": filename,
             "format": image_format,
             "lat": lat,
             "lon": lon,
-            "prediction_id": pred_id,
-            "prediction_polygon": pred_geojson,
+            "prediction_id": pred.id,
+            "prediction_meta": pred.meta_info,
             "message": "Imagem processada com sucesso"
         }
         return jsonify(response), 201
 
-    except Exception:
+    except Exception as e:
         current_app.logger.exception("Erro processando upload de imagem")
         db.session.rollback()
-        return jsonify({'error': 'Erro interno ao processar imagem'}), 500
+        return jsonify({'error': 'Erro interno ao processar imagem', 'detail': str(e)}), 500
 
 
 
