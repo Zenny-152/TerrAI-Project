@@ -9,11 +9,11 @@ import torch.optim as optim
 import torchvision.transforms as T
 from torchvision import datasets, models
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler
 from sklearn.utils.class_weight import compute_class_weight
 from tqdm import tqdm
-from .utils import CLASS_NAMES
-from .losses import FocalLoss
+from utils import CLASS_NAMES
+from losses import FocalLoss
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -153,8 +153,8 @@ def main(args):
     model = model.to(device)
 
     criterion = FocalLoss(gamma=2.0, alpha=class_weights_np if class_weights is not None else None)
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     scaler = GradScaler() if args.amp else None
 
@@ -186,6 +186,20 @@ def main(args):
             else:
                 out = model(imgs)
                 loss = criterion(out, labels)
+
+
+            if args.focal:
+                alpha_for_loss = None
+                if args.alpha is not None:
+                    alpha_for_loss = float(args.alpha)
+                else:
+                    # optionally pass array of class weights
+                    alpha_for_loss = class_weights_np.tolist()  # or class_weights_np if losses accepts tensor
+                criterion = FocalLoss(gamma=args.gamma, alpha=alpha_for_loss)
+            else:
+                # fallback cross entropy with class weights
+                criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor(class_weights_np, dtype=torch.float).to(device))
+
 
             # mixed precision if requested
             if scaler is not None:
@@ -250,5 +264,8 @@ if __name__ == "__main__":
     parser.add_argument("--cutmix-alpha", type=float, default=1.0)
     parser.add_argument("--cutout", action="store_true")
     parser.add_argument("--cutout-size", type=int, default=64)
+    parser.add_argument("--focal", action="store_true", help="use focal loss")
+    parser.add_argument("--gamma", type=float, default=2.0, help="focal gamma")
+    parser.add_argument("--alpha", type=float, default=None, help="focal alpha (scalar) or leave None")
     args = parser.parse_args()
     main(args)
