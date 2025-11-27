@@ -5,7 +5,7 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 from torchvision import transforms, models
-from utils import CLASS_NAMES, CLASS_DISPLAY_NAMES, percentage_to_bucket, probs_to_percentage
+from .utils import CLASS_NAMES, CLASS_DISPLAY_NAMES, percentage_to_bucket, probs_to_percentage
 
 # Configs
 MODEL_PATH = os.getenv("ML_MODEL_PATH", "ml/models/best.pth")  # ajuste se necessário

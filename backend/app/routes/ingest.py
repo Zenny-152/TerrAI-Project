@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, current_app, render_template_string, url_for
+from flask import Blueprint, request, jsonify, current_app, render_template, url_for, redirect
 from werkzeug.utils import secure_filename
 from shapely.geometry import shape, MultiPolygon, mapping
 import os
@@ -137,25 +137,29 @@ def _sanitize_exif_tags(tags, max_len=2000):
 
     return out if out else None
 
+# rota GET para servir a página amigável
+@bp.route('/upload', methods=['GET'])
+def ingest_upload_page():
+    post_url = url_for('ingest.ingest_image')
+    return render_template('upload.html', post_url=post_url)
+
 @bp.route('/upload', methods=['POST'])
 def ingest_image():
-    """
-    Recebe multipart/form-data:
-      - file: arquivo de imagem (obrigatório)
-      - lat (opcional): latitude float (fallback se não houver EXIF)
-      - lon (opcional): longitude float
-    Retorna JSON com image_id e (se disponível) prediction com polígono buffer.
-    """
-    if 'file' not in request.files:
-        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
+    upload = request.files.get('file') or request.files.get('image')
 
-    upload = request.files['file']
     if not upload or upload.filename == '':
+        # se veio por browser (form) retorna page com erro simples
+        if request.accept_mimetypes.accept_html:
+            return render_template('upload.html', post_url=url_for('ingest.ingest_image'),
+                                   error="Nenhum arquivo enviado ou nome inválido")
         return jsonify({'error': 'Nome de arquivo inválido'}), 400
 
     # secure filename and extension check
     safe_name = secure_filename(upload.filename)
     if not _is_allowed_filename(safe_name):
+        if request.accept_mimetypes.accept_html:
+            return render_template('upload.html', post_url=url_for('ingest.ingest_image'),
+                                   error='Tipo de arquivo não permitido; use jpg/png')
         return jsonify({'error': 'Tipo de arquivo não permitido; use jpg/png'}), 400
 
     # basic size check
@@ -163,6 +167,9 @@ def ingest_image():
     size = upload.stream.tell()
     upload.stream.seek(0)
     if size > MAX_FILE_SIZE:
+        if request.accept_mimetypes.accept_html:
+            return render_template('upload.html', post_url=url_for('ingest.ingest_image'),
+                                   error='Arquivo muito grande (limite 10MB)')
         return jsonify({'error': 'Arquivo muito grande (limite 10MB)'}), 400
 
     try:
@@ -298,15 +305,16 @@ def ingest_image():
         db.session.commit()
 
         response = {
-            "image_id": img_rec.id,
-            "filename": filename,
-            "format": image_format,
-            "lat": lat,
-            "lon": lon,
-            "prediction_id": pred.id,
-            "prediction_meta": pred.meta_info,
-            "message": "Imagem processada com sucesso"
+            "severity_label": pred.meta_info.get("severity_label") if pred.meta_info else None,
+            "percentage": pred.meta_info.get("percentage") if pred.meta_info else None,
+            "prob": pred.prob,
+            "model_version": pred.model_version
         }
+
+        if img_rec.lat is not None and img_rec.lon is not None:
+            response["lat"] = img_rec.lat
+            response["lon"] = img_rec.lon
+
         return jsonify(response), 201
 
     except Exception as e:
