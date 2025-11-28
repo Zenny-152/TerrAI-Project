@@ -27,7 +27,10 @@
     .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:#f2f7f5;color:#064; font-weight:700}
     .maplink{display:inline-block;margin-top:8px;color:var(--accent)}
     footer{margin-top:18px;color:var(--muted);font-size:13px}
+  .hidden { display: none !important; }
   </style>
+  <!-- biblioteca leve para ler EXIF no cliente -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.min.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -41,11 +44,12 @@
         <input id="file" name="file" type="file" accept="image/*" required />
 
         <div class="row" style="margin-top:8px">
-          <div>
+          <!-- container com id para mostrar/ocultar -->
+          <div id="geoRow" class="hidden">
             <label for="lat">Latitude (opcional)</label>
             <input id="lat" name="lat" type="text" placeholder="-22.915" />
           </div>
-          <div>
+          <div id="geoRow2" class="hidden">
             <label for="lon">Longitude (opcional)</label>
             <input id="lon" name="lon" type="text" placeholder="-43.200" />
           </div>
@@ -64,15 +68,13 @@
       <div id="out" style="margin-top:12px"></div>
 
       <footer>
-        Dica: se a foto tiver geolocalização (EXIF) o sistema tentará usar; preencha lat/lon como fallback.
+        Dica: se a foto tiver geolocalização (EXIF) o sistema tentará usar; preencha lat/lon manualmente apenas se necessário.
       </footer>
     </div>
   </div>
 
   <script>
-
     const INGEST_URL = '/ingest/upload';
-
     const form = document.getElementById('form');
     const fileInput = document.getElementById('file');
     const preview = document.getElementById('preview');
@@ -80,17 +82,106 @@
     const out = document.getElementById('out');
     const progress = document.getElementById('progress');
     const submit = document.getElementById('submit');
+    const geoRow = document.getElementById('geoRow');
+    const geoRow2 = document.getElementById('geoRow2');
+    const latInput = document.getElementById('lat');
+    const lonInput = document.getElementById('lon');
 
-    fileInput.addEventListener('change', () => {
+    // Esconder campos inicialmente — só mostramos se EXIF GPS existir
+    function hideGeoFields(){ geoRow.classList.add('hidden'); geoRow2.classList.add('hidden'); }
+    function showGeoFields(){ geoRow.classList.remove('hidden'); geoRow2.classList.remove('hidden'); }
+
+    hideGeoFields();
+
+    fileInput.addEventListener('change', async () => {
       const f = fileInput.files && fileInput.files[0];
-      if (!f) { preview.style.display='none'; return; }
+      if (!f) { preview.style.display='none'; hideGeoFields(); return; }
       const url = URL.createObjectURL(f);
       previewImg.src = url; preview.style.display = 'block';
+
+      // ler EXIF usando exif-js
+      try {
+        EXIF.getData(f, function() {
+          const lat = EXIF.getTag(this, "GPSLatitude");
+          const latRef = EXIF.getTag(this, "GPSLatitudeRef");
+          const lon = EXIF.getTag(this, "GPSLongitude");
+          const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
+
+          if (lat && lon) {
+            const decLat = gpsToDecimal(lat, latRef);
+            const decLon = gpsToDecimal(lon, lonRef);
+            latInput.value = String(decLat.toFixed(6));
+            lonInput.value = String(decLon.toFixed(6));
+            // mostrar campos quando houver GPS
+            showGeoFields();
+          } else {
+            // sem GPS — manter oculto
+            hideGeoFields();
+            latInput.value = '';
+            lonInput.value = '';
+          }
+        });
+      } catch (e) {
+        console.warn('Falha ao ler EXIF:', e);
+        hideGeoFields();
+      }
     });
 
-    function fmtPercent(p){
+    // converte array DMS do EXIF para decimal
+    function gpsToDecimal(dms, ref){
+      // dms normalmente é array de {numerator, denominator} ou números
+      try {
+        const toNum = (v) => {
+          if (typeof v === 'object' && v.numerator !== undefined) return v.numerator / v.denominator;
+          return Number(v);
+        };
+        const d = toNum(dms[0]);
+        const m = toNum(dms[1]);
+        const s = toNum(dms[2]);
+        let dec = d + (m / 60) + (s / 3600);
+        if (ref === 'S' || ref === 'W' || ref === 'south' || ref === 'west') dec = -dec;
+        return dec;
+      } catch (err){
+        return null;
+      }
+    }
+
+    // normaliza percentuais: aceita 0..1 ou 0..100
+    function normalizeToPercent(value){
+      if (value === null || value === undefined) return null;
+      const v = Number(value);
+      if (isNaN(v)) return null;
+      if (v > 1) return Math.round(v);       // já está em 0..100
+      return Math.round(v * 100);            // estava em 0..1
+    }
+
+    // formata percentual como inteiro (ex: 61%)
+    function fmtPercentInteger(p){
+      const pct = normalizeToPercent(p);
+      if (pct === null) return '—';
+      return pct + '%';
+    }
+
+    // formata porcentagens com 1 casa decimal (para distribuição)
+    function fmtPercentOneDecimal(p){
       if (p === null || p === undefined) return '—';
-      return (Math.round(p*100)/100).toFixed(2) + '%';
+      const v = Number(p);
+      if (isNaN(v)) return '—';
+      const pct = (v > 1) ? v : (v * 100);
+      return pct.toFixed(1) + '%';
+    }
+
+    // mapeia rótulos EN -> PT (fazer uppercase)
+    function mapSeverityToPortuguese(label){
+      if (!label) return 'N/D';
+      const key = String(label).trim().toLowerCase();
+      const map = {
+        'low': 'BAIXO',
+        'medium': 'MÉDIO',
+        'high': 'ALTO',
+        'unknown': 'N/D'
+      };
+      return map[key] || String(label).toUpperCase();
     }
 
     form.addEventListener('submit', async (ev)=>{
@@ -102,13 +193,15 @@
       const fd = new FormData();
       if (!fileInput.files || !fileInput.files[0]) { out.textContent = 'Selecione um arquivo.'; submit.disabled=false; return; }
       fd.append('file', fileInput.files[0]);
-      const lat = document.getElementById('lat').value;
-      const lon = document.getElementById('lon').value;
-      if (lat) fd.append('lat', lat);
-      if (lon) fd.append('lon', lon);
+      // só envia lat/lon se estão visíveis e preenchidos (porque vieram do EXIF)
+      if (!geoRow.classList.contains('hidden')) {
+        const lat = latInput.value.trim();
+        const lon = lonInput.value.trim();
+        if (lat) fd.append('lat', lat);
+        if (lon) fd.append('lon', lon);
+      }
 
       try {
-        // usamos XHR para ter progresso
         await new Promise((resolve, reject)=>{
           const xhr = new XMLHttpRequest();
           xhr.open('POST', INGEST_URL, true);
@@ -137,45 +230,109 @@
     });
 
     function renderResult(resp){
+      console.log('DEBUG server response:', resp);
+
       if (!resp) { out.innerHTML = '<div>Resposta vazia do servidor</div>'; return; }
-      // se o servidor retornar objeto com message/erro
       if (resp.error){ out.innerHTML = `<div style="color:#900">Erro: ${resp.error}</div>`; return; }
 
-      // Campos que o backend deve retornar: percentage, severity_label, prob, probs, model_version, lat/lon (quando disponíveis)
-      const percent = resp.percentage ?? resp.percentage;
-      const severity = resp.severity_label ?? resp.severity ?? 'unknown';
-      const prob = resp.prob ?? null;
-      const probs = resp.probs ?? null;
-      const model = resp.model_version ?? null;
+      // localizar probs em vários possíveis caminhos
+      let probs = null;
+      if (Array.isArray(resp.probs)) probs = resp.probs;
+      else if (resp.prediction && Array.isArray(resp.prediction.probs)) probs = resp.prediction.probs;
+      else if (resp.data && Array.isArray(resp.data.probs)) probs = resp.data.probs;
+      else if (resp.result && Array.isArray(resp.result.probs)) probs = resp.result.probs;
+      else if (typeof resp.probs === 'string' && resp.probs.indexOf(',')>-1) {
+        probs = resp.probs.split(',').map(x => Number(x.trim()));
+      } else if (resp.prediction && typeof resp.prediction.probs === 'string') {
+        probs = resp.prediction.probs.split(',').map(x => Number(x.trim()));
+      }
 
-      // monta HTML
+      // fallback: if still null, try to coerce fields named like 'probs_str'
+      if (!probs) {
+        for (const k of Object.keys(resp)) {
+          if (k.toLowerCase().includes('probs') || k.toLowerCase().includes('probabilities')) {
+            const val = resp[k];
+            if (Array.isArray(val)) { probs = val; break; }
+            if (typeof val === 'string' && val.indexOf(',')>-1) { probs = val.split(',').map(x => Number(x.trim())); break; }
+          }
+        }
+      }
+
+      // find single prob or percentage
+      const probRaw = resp.prob ?? resp.prediction?.prob ?? null;
+      const percentageRaw = resp.percentage ?? resp.prediction?.percentage ?? resp.perc ?? null;
+      // determine severity label (prefer explicit mapping)
+      const severityRaw = resp.severity_label ?? resp.prediction?.severity_label ?? resp.severity ?? 'unknown';
+
+      // compute chosen probability if probs exists
+      let chosenIdx = null;
+      let chosenProb = null;
+      if (Array.isArray(probs) && probs.length>0) {
+        // ensure numeric
+        probs = probs.map(x => Number(x));
+        let max = -Infinity;
+        for (let i=0;i<probs.length;i++){
+          if (probs[i] > max){ max = probs[i]; chosenIdx = i; chosenProb = probs[i]; }
+        }
+      } else {
+        // fallback to probRaw
+        chosenProb = (probRaw !== null && probRaw !== undefined) ? Number(probRaw) : null;
+      }
+
+      // normalize helper (0..1 or 0..100 -> integer percent)
+      function normalizeToPercent(v) {
+        if (v === null || v === undefined || isNaN(Number(v))) return null;
+        const n = Number(v);
+        if (n > 1) return Math.round(n); // already 0..100
+        return Math.round(n * 100);
+      }
+
+      const percentFromChosen = normalizeToPercent(chosenProb);
+      const percentFromField = normalizeToPercent(percentageRaw);
+      const percentToShow = (percentFromField !== null) ? percentFromField : percentFromChosen;
+
+      // mapping severity to pt (reuse your previous mapping)
+      function mapSeverityToPortuguese(label){
+        if (!label) return 'N/D';
+        const key = String(label).trim().toLowerCase();
+        const map = { 'low':'BAIXO', 'medium':'MÉDIO', 'high':'ALTO', 'unknown':'N/D' };
+        return map[key] || String(label).toUpperCase();
+      }
+      const severity = mapSeverityToPortuguese(severityRaw);
+
+      // build HTML
       let html = '';
       html += '<div class="result">';
       html += '<div class="stat">';
-      html += `<div class="label">Nivel estimado</div>`;
-      html += `<div class="big">${severity.toUpperCase()}</div>`;
-      if (percent!==null && percent!==undefined) html += `<div style="margin-top:6px">Probabilidade combinada: <strong>${percent}</strong></div>`;
-      if (prob!==null && prob!==undefined) html += `<div style="margin-top:6px">Probabilidade em porcentagem: <strong>${fmtPercent(prob)}</strong></div>`;
-      if (model) html += `<div style="margin-top:8px;font-size:12px;color:var(--muted)">Modelo: ${model}</div>`;
-      if (resp.lat!==undefined && resp.lon!==undefined) {
-        html += `<div style="margin-top:8px"><span class="label">Coordenadas</span><div>${resp.lat}, ${resp.lon}</div>`;
-        if (resp.prediction_polygon) html += `<div><a class="maplink" href="#" onclick="window.open(JSON.stringify(${JSON.stringify(resp.prediction_polygon)}))">Ver polígono</a></div>`;
-        html += '</div>';
+      html += `<div class="label">Nível estimado</div>`;
+      html += `<div class="big">${severity}</div>`;
+      if (percentToShow !== null) html += `<div style="margin-top:6px">Chance de deslizamento: <strong>${percentToShow}%</strong></div>`;
+      if (percentFromChosen !== null) html += `<div style="margin-top:6px">Score contínuo de risco (0–100): <strong>${percentFromChosen}%</strong></div>`;
+      if (resp.model_version) html += `<div style="margin-top:8px;font-size:12px;color:var(--muted)">Modelo: ${resp.model_version}</div>`;
+      if (resp.lat!==undefined && resp.lon!==undefined && resp.lat!==null && resp.lon!==null) {
+        html += `<div style="margin-top:8px"><span class="label">Coordenadas</span><div>${resp.lat}, ${resp.lon}</div></div>`;
       }
       html += '</div>'; // stat
 
       html += '<div class="stat">';
       html += '<div class="label">Distribuição (todas as classes)</div>';
-      if (Array.isArray(probs)){
+      if (Array.isArray(probs) && probs.length>0) {
         html += '<div style="margin-top:6px">';
-        probs.forEach((p,i)=>{
-          html += `<div style="margin:6px 0"><strong>${(p*100).toFixed(1)}%</strong> — Classe ${i+1}</div>`;
-        });
+        for (let i=0;i<probs.length;i++){
+          const p = probs[i];
+          // format 1 decimal if originally 0..1 or >1
+          const pct = (p > 1) ? Number(p) : Number(p * 100);
+          html += `<div style="margin:6px 0"><strong>${pct.toFixed(1)}%</strong> — Classe ${i+1}</div>`;
+        }
         html += '</div>';
-      } else html += '<div>N/D</div>';
+      } else {
+        html += '<div>N/D</div>';
+      }
       html += '</div>'; // stat
-
       html += '</div>'; // result
+
+      // debug: raw json collapsed
+      html += '<div style="margin-top:10px;font-size:12px;color:#666"><details><summary>Mostrar resposta bruta (debug)</summary><pre style="white-space:pre-wrap;">' + JSON.stringify(resp, null, 2) + '</pre></details></div>';
 
       out.innerHTML = html;
     }
