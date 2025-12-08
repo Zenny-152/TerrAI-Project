@@ -32,7 +32,7 @@ def _build_model(num_classes=NUM_CLASSES):
     return model
 
 def load_model(path: str = None):
-    global _model, NUM_CLASSES
+    global _model, CLASS_NAMES
     if _model is not None:
         return _model
     p = path or MODEL_PATH
@@ -41,34 +41,45 @@ def load_model(path: str = None):
     if not os.path.exists(p):
         raise FileNotFoundError(f"Model file not found: {p}")
     state = torch.load(p, map_location=device)
-    # detect possible containers
+    ckpt_class_to_idx = None
     if isinstance(state, dict) and ("state_dict" in state or "model_state_dict" in state):
         sd = state.get("state_dict") or state.get("model_state_dict")
-        # optionally load class_to_idx saved in checkpoint
         class_to_idx = state.get("class_to_idx") or state.get("class_mapping")
         if class_to_idx:
-            # se existir, reindex CLASS_NAMES para refletir ordem usada no treino
             try:
-                # class_to_idx: {class_name: idx}
-                inv = {v: k for k, v in class_to_idx.items()}
-                # build CLASS_NAMES_ORDERED local copy
-                global CLASS_NAMES
-                CLASS_NAMES = [inv[i] for i in range(len(inv))]
-                logger.debug("Loaded class_to_idx from checkpoint; CLASS_NAMES adjusted.")
+                # invert mapping: idx -> class_name
+                inv = {int(v): str(k) for k, v in class_to_idx.items()}
+                # Create ordered class list based on indices 0..n-1
+                max_idx = max(inv.keys())
+                ordered = [inv[i] for i in range(max_idx + 1)]
+                CLASS_NAMES = ordered
+                logger.info("Loaded class_to_idx from checkpoint; CLASS_NAMES set to: %s", CLASS_NAMES)
+                ckpt_class_to_idx = class_to_idx
             except Exception as e:
                 logger.debug("Failed to apply class_to_idx from checkpoint: %s", e)
         model.load_state_dict(sd)
     else:
-        # state is raw state_dict or other
         model.load_state_dict(state)
     model.to(device)
     model.eval()
     _model = model
+    # Return model and any class map found via attribute for debug if needed
+    _model._ckpt_class_to_idx = ckpt_class_to_idx
     return _model
 
 def _prepare_image(image_bytes: bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    return _transform(img).unsqueeze(0)  # [1,C,H,W]
+    return _transform(img).unsqueeze(0)
+
+def _normalize_percent_value(val):
+    """Garantir percent em 0..100 (float). Aceita 0..1 ou 0..100."""
+    try:
+        v = float(val)
+    except Exception:
+        return None
+    if v <= 1.0:
+        return v * 100.0
+    return v
 
 def predict_from_bytes(image_bytes: bytes, model_path: str = None):
     try:
@@ -79,43 +90,73 @@ def predict_from_bytes(image_bytes: bytes, model_path: str = None):
 
     tensor = _prepare_image(image_bytes).to(DEVICE)
     with torch.no_grad():
-        logits = model(tensor)              # [1, num_classes]
-        probs = F.softmax(logits, dim=1)    # [1, num_classes]
-        probs_np = probs.squeeze(0).cpu().numpy().tolist()
+        logits = model(tensor)             # [1, num_classes]
+        probs = F.softmax(logits, dim=1)   # [1, num_classes]
+        probs_np = probs.squeeze(0).cpu().numpy().astype(float).tolist()
 
-    # top class
+    # argmax index and prob
     top_idx = int(max(range(len(probs_np)), key=lambda i: probs_np[i]))
     top_prob = float(probs_np[top_idx])
-    # safe mapping: if CLASS_NAMES length mismatch, fallback to index-based name
+
+    # safe class name mapping (CLASS_NAMES should reflect checkpoint's order if present)
     class_name = CLASS_NAMES[top_idx] if top_idx < len(CLASS_NAMES) else f"class_{top_idx}"
     pretty = CLASS_DISPLAY_NAMES.get(class_name, class_name)
 
-    # percentage using provided helper, fallback to top_prob*100
+    # percentage: normalize to 0..100 (try helper first, but guarantee scale)
+    percent = None
     try:
-        percent = probs_to_percentage(probs_np)
+        percent_try = probs_to_percentage(probs_np)  # unknown scale from helper
+        if percent_try is not None:
+            percent_try = _normalize_percent_value(percent_try)
+        if percent_try is not None:
+            percent = round(percent_try, 2)
     except Exception:
-        logger.debug("probs_to_percentage failed; using top_prob*100 fallback")
-        percent = round(top_prob * 100, 2)
+        logger.debug("probs_to_percentage failed", exc_info=True)
 
-    severity = percentage_to_bucket(percent)
+    if percent is None:
+        percent = round(top_prob * 100.0, 2)
 
-    # return also class_to_idx info if available (helps debug)
+    # severity derived in two ways:
+    # 1) severity_by_bucket: using percentage_to_bucket (informational)
+    severity_by_bucket = None
+    try:
+        # assume percentage_to_bucket expects 0..100; if it expects 0..1 pass normalized
+        severity_by_bucket = percentage_to_bucket(percent)
+    except Exception:
+        try:
+            severity_by_bucket = percentage_to_bucket(percent / 100.0)
+        except Exception:
+            severity_by_bucket = None
+
+    # 2) severity_label: deterministic mapping from predicted class (safe for UI)
+    severity_label = pretty  # ex: 'BAIXO'/'MÉDIO'/'ALTO' from CLASS_DISPLAY_NAMES
+
+    # gather checkpoint mapping if present for debugging
     ckpt_info = None
     try:
         ckpt = torch.load(model_path or MODEL_PATH, map_location='cpu')
         if isinstance(ckpt, dict) and ("class_to_idx" in ckpt or "class_mapping" in ckpt):
             ckpt_info = ckpt.get("class_to_idx") or ckpt.get("class_mapping")
     except Exception:
-        ckpt_info = None
+        ckpt_info = getattr(model, "_ckpt_class_to_idx", None)
 
-    return {
+    response = {
         "class_index": top_idx,
         "class_name": class_name,
         "class_pretty": pretty,
         "prob": round(top_prob, 4),
         "probs": [round(float(p), 4) for p in probs_np],
-        "percentage": percent,
-        "severity_label": severity,
+        "percentage": percent,                       # ALWAYS 0..100
+        "severity_label": severity_label,            # deterministic-friendly label
+        "severity_by_bucket": severity_by_bucket,    # optional extra info (from percentage_to_bucket)
+        "classes": list(CLASS_NAMES),                # mapping index -> class_name (helps frontend)
         "model_version": os.path.basename(model_path or MODEL_PATH),
         "ckpt_class_to_idx": ckpt_info
     }
+
+    # sanity logs (optional)
+    logger.debug("predict_from_bytes: top_idx=%s class_name=%s top_prob=%s percent=%s", top_idx, class_name, top_prob, percent)
+    logger.debug("predict_from_bytes: probs=%s", [round(float(p), 6) for p in probs_np])
+    logger.debug("predict_from_bytes: response (to be returned) = %s", response)
+    logger.debug("Prediction response: idx=%s name=%s prob=%s percent=%s", top_idx, class_name, top_prob, percent)
+    return response

@@ -19,15 +19,21 @@ CLASS_CENTERS = {
 def probs_to_percentage(probs: List[float]) -> float:
     """
     Recebe uma lista/np.array de probabilidades (softmax) e calcula uma
-    porcentagem representativa usando os centros.
+    porcentagem representativa usando os centros (CLASS_CENTERS) mapeados
+    na ordem de CLASS_NAMES.
     """
     if not probs:
         return 0.0
-    # garante mesmo tamanho
-    n = min(len(probs), len(CLASS_CENTERS))
+    # usa a ordem explícita de CLASS_NAMES para referenciar os centros
     s = 0.0
+    n = min(len(probs), len(CLASS_NAMES))
     for i in range(n):
-        s += float(probs[i]) * float(CLASS_CENTERS[i])
+        class_key = CLASS_NAMES[i]  # ex: "01_low"
+        center = CLASS_CENTERS.get(class_key)
+        if center is None:
+            # fallback: evenly spaced center aproximado (por segurança)
+            center = (i + 0.5) * (100.0 / len(CLASS_NAMES))
+        s += float(probs[i]) * float(center)
     return round(s, 2)
 
 def percentage_to_bucket(percent: float) -> str:
@@ -45,7 +51,7 @@ def percentage_to_bucket(percent: float) -> str:
         return "low"
     if percent <= 65:
         return "medium"
-    return "extreme"
+    return "high"
 
 def class_index_to_name(idx: int) -> str:
     try:
