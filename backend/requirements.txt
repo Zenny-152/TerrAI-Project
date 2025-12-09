@@ -1,9 +1,40 @@
+# NOTE: PyTorch (torch & torchvision) often requires platform-specific wheels.
+# Please install torch/torchvision following instructions at https://pytorch.org/get-started/locally/
+# Example (CPU-only): pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Uncomment and install the correct torch wheel for your environment before running full install.
+
 Flask==2.3.2
 Flask-SQLAlchemy==3.0.3
-geoalchemy2==0.11.3
-psycopg2-binary==2.9.7
 python-dotenv==1.0.0
 gunicorn==20.1.0
-Shapely==2.0.1
+
+# Database / PostGIS
+psycopg2-binary==2.9.7
+geoalchemy2==0.11.3
 Geopandas==0.13.2
+Shapely==2.0.1
 pyproj==3.6.0
+
+# Data / ML utilities
+numpy>=1.24,<2
+pandas>=2.0,<3
+pillow>=9.4.0
+scikit-learn>=1.2,<2
+matplotlib>=3.6,<4
+opencv-python>=4.7,<5
+tqdm>=4.65
+
+# Optional / dev tools
+black==23.9.1
+pytest==7.4.0
+flake8==6.1.0
+
+# Recommended: install PyTorch separately (see top notes)
+# torch==2.2.0
+# torchvision==0.17.0
+
+# Notes:
+# - geopandas / shapely / pyproj may require system packages (GDAL, PROJ). Consider using conda if you face install issues:
+#   conda install -c conda-forge geopandas gdal proj shapely pyproj
+# - psycopg2-binary is convenient for development; for production prefer building psycopg2 from source (non-binary) and configuring your DB client.
+# - If you run on GPU, install the torch wheel that matches your CUDA version (see https://pytorch.org/get-started/locally/).
