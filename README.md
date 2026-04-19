@@ -47,3 +47,47 @@ A proposta do projeto é permitir que qualquer pessoa envie uma foto de um terre
 ## Arquitetura do Projeto
 
 O sistema segue uma arquitetura modular dividida em três partes principais:
+
+[Frontend]
+↓
+[API Flask]
+↓
+[Módulo de Machine Learning]
+
+---
+
+Fluxo:
+1. Usuário envia uma imagem
+2. Backend recebe e processa o arquivo
+3. Modelo de IA realiza a inferência
+4. Resultado é retornado para o frontend
+
+---
+
+##  Modelo de Machine Learning
+
+O modelo foi desenvolvido utilizando **Transfer Learning** com redes pré-treinadas no ImageNet.
+
+- Arquitetura: ResNet
+- Classes:
+  - Low (baixo risco)
+  - Medium (médio risco)
+  - High (alto risco)
+- Saída:
+  - Probabilidades por classe (Softmax)
+  - Classe final
+  - Score de risco
+
+---
+
+##  Avaliação
+
+O modelo foi avaliado com métricas como:
+
+- Accuracy
+- Precision
+- Recall
+- F1-score
+- Matriz de Confusão
+
+> ⚠️ Observação: Este projeto é uma prova de conceito e possui limitações relacionadas ao tamanho e qualidade do dataset.
