@@ -8,14 +8,14 @@ A proposta do projeto é permitir que qualquer pessoa envie uma foto de um terre
 
 ## Funcionalidades
 
-- 📤 Upload de imagens via interface web
-- 🧠 Classificação automática de risco com modelo de IA
-- 📊 Retorno de:
+-  Upload de imagens via interface web
+-  Classificação automática de risco com modelo de IA
+-  Retorno de:
   - Classe de risco
   - Probabilidade da predição
   - Score contínuo de risco
-- 🌐 API REST para integração com outros sistemas
-- 🗺️ Leitura opcional de geolocalização (EXIF)
+-  API REST para integração com outros sistemas
+-  Leitura opcional de geolocalização (EXIF)
 
 ---
 
