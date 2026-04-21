@@ -1,4 +1,4 @@
-TerrAI — Detecção de Risco de Deslizamentos com IA
+### TerrAI — Detecção de Risco de Deslizamentos com IA
 
 O TerrAI é um sistema desenvolvido como Trabalho de Conclusão de Curso (TCC) com o objetivo de auxiliar na identificação de risco de deslizamentos de encostas a partir de imagens capturadas por usuários.
 
