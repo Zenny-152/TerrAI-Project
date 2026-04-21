@@ -91,3 +91,67 @@ O modelo foi avaliado com métricas como:
 - Matriz de Confusão
 
 > ⚠️ Observação: Este projeto é uma prova de conceito e possui limitações relacionadas ao tamanho e qualidade do dataset.
+
+---
+
+## Como executar o projeto
+
+### 1. Clonar o repositório
+git clone https://github.com/seu-usuario/terrai.git
+cd terrai
+
+### 2. Criar ambiente virtual
+
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+venv\Scripts\activate     # Windows
+
+### 3. Instalar dependências
+
+pip install -r requirements.txt
+
+### 4. Configurar variáveis de ambiente
+
+Crien um arquivo .env com:
+ML_MODEL_PATH=ml/models/best.pth
+
+### 5. Executar aplicação
+
+python main.py
+
+### A aplicação estará disponível em:
+
+http://localhost:5000
+
+---
+
+### Estrutura do projeto
+
+terrai/
+│
+├── backend/
+├── ml/
+│   ├── train.py
+│   ├── predict.py
+│   └── utils.py
+│
+├── templates/
+├── static/
+├── main.py
+└── requirements.txt
+
+---
+
+### Trabalhos Futuros
+
+Integração com dados geoespaciais (PostGIS)
+Aumento do dataset
+Melhoria da acurácia do modelo
+Deploy em ambiente cloud
+Aplicação mobile
+
+---
+
+### Autor
+
+Lucas Muniz Vieira Souto
