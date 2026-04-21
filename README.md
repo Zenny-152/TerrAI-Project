@@ -127,6 +127,7 @@ http://localhost:5000
 
 ### Estrutura do projeto
 
+```
 terrai/
 │
 ├── backend/
@@ -139,6 +140,7 @@ terrai/
 ├── static/
 ├── main.py
 └── requirements.txt
+```
 
 ---
 
