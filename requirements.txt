@@ -1,0 +1,8 @@
+Flask
+python-dotenv
+torch
+torchvision
+Pillow
+numpy
+psycopg2-binary
+tqdm
